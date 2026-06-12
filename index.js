@@ -43,30 +43,62 @@ async function initDb() {
     error_text TEXT,
     created_at TIMESTAMP DEFAULT NOW()
   )`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS input_tokens INTEGER`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS output_tokens INTEGER`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS estimated_cost_usd DECIMAL(10,4)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS agent_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    enabled BOOLEAN DEFAULT true,
+    task_range VARCHAR(50) DEFAULT 'due_today',
+    range_days INTEGER DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT NOW(),
+    CONSTRAINT single_row CHECK (id = 1)
+  )`);
+  await pool.query(`INSERT INTO agent_settings (id, enabled, task_range, range_days)
+    VALUES (1, true, 'due_today', 0) ON CONFLICT (id) DO NOTHING`);
   console.log('[Research Agent] Database initialised');
 }
 
-// ── Step 1: Fetch today's tasks ───────────────────────────────────────────────
+async function getSettings() {
+  const { rows } = await pool.query('SELECT * FROM agent_settings WHERE id = 1');
+  return rows[0] || { enabled: true, task_range: 'due_today', range_days: 0 };
+}
 
-async function fetchTodaysTasks() {
-  const startOfDay = new Date();
-  startOfDay.setUTCHours(0, 0, 0, 0);
-  const endOfDay = new Date();
-  endOfDay.setUTCHours(23, 59, 59, 999);
+// ── Step 1: Fetch tasks to process ───────────────────────────────────────────
+
+async function fetchTasksToProcess(settings) {
+  const now = new Date();
+  const baseFilters = [
+    { propertyName: 'hs_task_status', operator: 'EQ', value: 'NOT_STARTED' },
+    { propertyName: 'hubspot_owner_id', operator: 'EQ', value: HUBSPOT_OWNER_ID },
+  ];
+
+  let rangeFilters;
+  if (settings.task_range === 'overdue_by') {
+    const cutoff = new Date(now.getTime() - (settings.range_days || 0) * 24 * 60 * 60 * 1000);
+    rangeFilters = [{ propertyName: 'hs_timestamp', operator: 'LTE', value: String(cutoff.getTime()) }];
+  } else if (settings.task_range === 'due_within') {
+    const cutoff = new Date(now.getTime() + (settings.range_days || 0) * 24 * 60 * 60 * 1000);
+    cutoff.setUTCHours(23, 59, 59, 999);
+    rangeFilters = [
+      { propertyName: 'hs_timestamp', operator: 'GTE', value: String(now.getTime()) },
+      { propertyName: 'hs_timestamp', operator: 'LTE', value: String(cutoff.getTime()) },
+    ];
+  } else {
+    const startOfDay = new Date(); startOfDay.setUTCHours(0, 0, 0, 0);
+    const endOfDay = new Date(); endOfDay.setUTCHours(23, 59, 59, 999);
+    rangeFilters = [
+      { propertyName: 'hs_timestamp', operator: 'GTE', value: String(startOfDay.getTime()) },
+      { propertyName: 'hs_timestamp', operator: 'LTE', value: String(endOfDay.getTime()) },
+    ];
+  }
 
   let resp;
   try {
     resp = await axios.post(
       'https://api.hubapi.com/crm/v3/objects/tasks/search',
       {
-        filterGroups: [{
-          filters: [
-            { propertyName: 'hs_task_status', operator: 'EQ', value: 'NOT_STARTED' },
-            { propertyName: 'hubspot_owner_id', operator: 'EQ', value: HUBSPOT_OWNER_ID },
-            { propertyName: 'hs_timestamp', operator: 'GTE', value: String(startOfDay.getTime()) },
-            { propertyName: 'hs_timestamp', operator: 'LTE', value: String(endOfDay.getTime()) },
-          ],
-        }],
+        filterGroups: [{ filters: [...baseFilters, ...rangeFilters] }],
         properties: ['hs_task_subject', 'hubspot_owner_id', 'hs_timestamp', 'hs_task_status'],
         limit: 100,
       },
@@ -340,7 +372,11 @@ Research this company and contact thoroughly using web search, then produce the 
   }
 
   const textBlock = response.content.findLast(b => b.type === 'text');
-  return textBlock ? textBlock.text.trim() : '<p>Research could not be completed.</p>';
+  const briefText = textBlock ? textBlock.text.trim() : '<p>Research could not be completed.</p>';
+  const inputTokens = response.usage?.input_tokens || 0;
+  const outputTokens = response.usage?.output_tokens || 0;
+  const estimatedCostUsd = (inputTokens * 3 / 1_000_000) + (outputTokens * 15 / 1_000_000);
+  return { briefText, inputTokens, outputTokens, estimatedCostUsd };
 }
 
 // ── Step 4: Write HubSpot note ────────────────────────────────────────────────
@@ -409,7 +445,7 @@ async function processTask(taskId, taskTitle) {
     );
 
     currentlyProcessing = { taskId, contactName, step: 'researching' };
-    const briefText = await researchCompany({
+    const { briefText, inputTokens, outputTokens, estimatedCostUsd } = await researchCompany({
       taskId,
       contactName,
       companyName,
@@ -425,9 +461,10 @@ async function processTask(taskId, taskTitle) {
 
     await pool.query(
       `UPDATE research_briefs
-       SET status = 'completed', brief_text = $1, hubspot_note_id = $2
-       WHERE task_id = $3`,
-      [briefText, noteId, taskId]
+       SET status = 'completed', brief_text = $1, hubspot_note_id = $2,
+           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5
+       WHERE task_id = $6`,
+      [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, taskId]
     );
   } finally {
     currentlyProcessing = null;
@@ -437,11 +474,17 @@ async function processTask(taskId, taskTitle) {
 // ── Main agent ────────────────────────────────────────────────────────────────
 
 async function runResearchAgent() {
+  const settings = await getSettings().catch(() => ({ enabled: true, task_range: 'due_today', range_days: 0 }));
+  if (!settings.enabled) {
+    console.log('[Research Agent] Skipped run — agent disabled');
+    return;
+  }
+
   console.log(`[Research Agent] Starting run — ${new Date().toISOString()}`);
   let processed = 0;
 
   try {
-    const tasks = await fetchTodaysTasks();
+    const tasks = await fetchTasksToProcess(settings);
 
     for (const task of tasks) {
       const taskId = task.id;
@@ -626,7 +669,7 @@ app.post('/api/briefs/manual', async (req, res) => {
     );
 
     currentlyProcessing = { taskId, contactName, step: 'researching' };
-    const briefText = await researchCompany({
+    const { briefText, inputTokens, outputTokens, estimatedCostUsd } = await researchCompany({
       taskId,
       contactName,
       companyName,
@@ -641,8 +684,11 @@ app.post('/api/briefs/manual', async (req, res) => {
     const noteId = await writeHubSpotNote(contactId, briefText, taskTitle);
 
     await pool.query(
-      `UPDATE research_briefs SET status = 'completed', brief_text = $1, hubspot_note_id = $2 WHERE task_id = $3`,
-      [briefText, noteId, taskId]
+      `UPDATE research_briefs
+       SET status = 'completed', brief_text = $1, hubspot_note_id = $2,
+           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5
+       WHERE task_id = $6`,
+      [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, taskId]
     );
 
     const { rows } = await pool.query('SELECT id FROM research_briefs WHERE task_id = $1', [taskId]);
@@ -656,6 +702,79 @@ app.post('/api/briefs/manual', async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   } finally {
     currentlyProcessing = null;
+  }
+});
+
+app.get('/api/settings', async (req, res) => {
+  try {
+    res.json(await getSettings());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings', async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${process.env.AGENT_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { enabled, task_range, range_days } = req.body;
+  const validRanges = ['due_today', 'overdue_by', 'due_within'];
+  if (task_range !== undefined && !validRanges.includes(task_range)) {
+    return res.status(400).json({ error: 'Invalid task_range' });
+  }
+  try {
+    await pool.query(
+      `UPDATE agent_settings SET
+         enabled    = COALESCE($1, enabled),
+         task_range = COALESCE($2, task_range),
+         range_days = COALESCE($3, range_days),
+         updated_at = NOW()
+       WHERE id = 1`,
+      [enabled ?? null, task_range ?? null, range_days ?? null]
+    );
+    res.json(await getSettings());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/settings/preview', async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${process.env.AGENT_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { task_range, range_days } = req.body;
+  try {
+    const tasks = await fetchTasksToProcess({ task_range: task_range || 'due_today', range_days: range_days || 0 });
+    res.json({ count: tasks.length });
+  } catch (err) {
+    console.error('[Research Agent] Settings preview failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/costs', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        COUNT(*) AS total_briefs,
+        COALESCE(SUM(estimated_cost_usd), 0) AS total_cost_usd,
+        COALESCE(AVG(estimated_cost_usd) FILTER (WHERE estimated_cost_usd IS NOT NULL), 0) AS avg_cost_per_brief,
+        COALESCE(SUM(estimated_cost_usd) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_cost_usd,
+        COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS today_briefs
+      FROM research_briefs
+    `);
+    const r = rows[0];
+    res.json({
+      totalBriefs:      parseInt(r.total_briefs) || 0,
+      totalCostUsd:     parseFloat(r.total_cost_usd) || 0,
+      avgCostPerBrief:  parseFloat(r.avg_cost_per_brief) || 0,
+      todayCostUsd:     parseFloat(r.today_cost_usd) || 0,
+      todayBriefs:      parseInt(r.today_briefs) || 0,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
