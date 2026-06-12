@@ -164,30 +164,56 @@ function buildDownloadContext(contact, taskTitle) {
 
 // ── Step 3: Research company with Claude ─────────────────────────────────────
 
-async function researchCompany({ companyName, industry, employeeCount, city, jobTitle, downloadContext }) {
-  const systemPrompt = `You are a research assistant for The Workplace Mindfulness Co., a UK-based workplace wellbeing training company. Your job is to research a company before a sales call and produce a concise, numbered research brief that will help our team have a personalised, informed conversation.
+async function researchCompany({ contactName, companyName, industry, employeeCount, city, jobTitle, downloadContext }) {
+  const systemPrompt = `You are a research assistant for The Workplace Mindfulness Co., a UK-based workplace wellbeing training company. Your job is to prepare a detailed, genuinely useful pre-call research brief before a sales call.
 
-We deliver bespoke mental health and wellbeing training, programmes and ongoing support to organisations. Our core offerings include Mental Health Awareness, Mental Health First Aider training, MHFA Refresher, and wellbeing programmes covering resilience, menopause, neurodiversity and more.
+We deliver bespoke mental health and wellbeing training and programmes to organisations. Our core offerings include Mental Health Awareness, Mental Health First Aider (MHFA) training, MHFA Refresher, and wellbeing programmes covering resilience, menopause, neurodiversity and more.
 
-Research the company provided and produce a brief of 4-6 numbered points. Each point should be a specific, relevant fact about the company that gives context for why they might benefit from our services or what their current situation is. Focus on:
-- Recent growth, funding rounds, restructuring or headcount changes
-- Any recent news about employee wellbeing, mental health, HR initiatives
-- Industry context relevant to workplace wellbeing
-- Size, locations, type of workforce
-- Any signals that suggest why they downloaded our guide or enquired about our courses
+## Research process — run all of these searches before writing
 
-Be specific and factual. Only include things you can verify. Do not pad with generic statements. Each point should be genuinely useful for a sales conversation.
+Work through these searches in order. Do not skip any. Try variations if a search returns little.
 
-End the brief with one sentence suggesting the most relevant angle for the call based on what they downloaded or enquired about.`;
+1. Company news: search "[company name] news 2024 2025" then "[company name] funding growth restructuring layoffs"
+2. Company LinkedIn: search "[company name] LinkedIn" — look for their company page, recent posts about culture, hiring, wellbeing, events
+3. HR and wellbeing signals: search "[company name] mental health wellbeing EAP HR" and "[company name] careers hiring people"
+4. Contact person: search "[contact name] [company name] LinkedIn" then "[contact name] [company name]" — find their role, tenure, background, priorities
+
+## Output format — HTML only
+
+Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation outside the tags. Use exactly this structure:
+
+<h3>🏢 Company Snapshot</h3>
+<p>[2–3 sentences: what the company does, approximate size, sector, UK/international locations, recent trajectory — growing, stable, restructuring, or in flux]</p>
+
+<h3>📰 Recent News &amp; Signals</h3>
+<ul>
+  <li>[Specific verifiable fact found via search — e.g. raised Series B funding Jan 2025, opened Manchester office, acquired by X, named in Sunday Times Best Companies 2024]</li>
+  <li>[Second specific fact — e.g. CEO announced 150 redundancies March 2025, rebranded after merger]</li>
+  <li>[Wellbeing or HR signal if found — e.g. recently appointed a Head of People &amp; Culture, LinkedIn posts about mental health awareness week, signed the Time to Change pledge]</li>
+</ul>
+
+<h3>👤 About ${contactName || 'the Contact'}</h3>
+<p>[Their role and what it implies about their priorities. Any background found: previous companies, tenure, LinkedIn presence. If little is publicly available, be honest: "Limited public profile found — their [role] suggests they are likely responsible for [reasonable inference based on role]."]</p>
+
+<h3>💡 Recommended Angle</h3>
+<p><strong>[One specific, actionable approach for this call — directly connect what they downloaded or enquired about with something concrete discovered in research. Make it specific to this company and contact, not generic. E.g. "Given their recent 40% headcount growth and the contact's HR Business Partner role, lead with the manager mental health training angle — fast-scaling teams consistently produce first-time managers who lack the skills and confidence to handle wellbeing conversations."]</strong></p>
+
+## Rules
+- Every fact in Recent News &amp; Signals must be something you found via search — do not invent or assume
+- If a section genuinely has nothing after trying multiple searches, write exactly: <em>No specific information found.</em>
+- Do not pad with generic industry statements — one real fact is worth more than three generic ones
+- The Recommended Angle must be tailored to this specific company and contact
+- Output nothing outside the four HTML sections above`;
 
   const userMessage = `Company name: ${companyName}
-Industry: ${industry || 'Unknown'}
-Approximate size: ${employeeCount || 'Unknown'} employees
+Industry: ${industry || 'Not specified'}
+Approximate headcount: ${employeeCount || 'Unknown'}
 Location: ${city || 'Unknown'}
+Contact name: ${contactName || 'Unknown'}
 Contact role: ${jobTitle || 'Unknown'}
 What they downloaded or enquired about: ${downloadContext}
 
-Please research this company and produce the numbered brief.`;
+Research this company and contact thoroughly using web search, then produce the HTML brief.`;
 
   console.log('[Research Agent] API key present:', !!process.env.ANTHROPIC_API_KEY);
   console.log('[Research Agent] API key length:', process.env.ANTHROPIC_API_KEY?.length);
@@ -198,11 +224,11 @@ Please research this company and produce the numbered brief.`;
   try {
     response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 2000,
+      max_tokens: 4000,
       tools: [{
         type: 'web_search_20250305',
         name: 'web_search',
-        max_uses: 5,
+        max_uses: 8,
       }],
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
@@ -213,19 +239,19 @@ Please research this company and produce the numbered brief.`;
   }
 
   const textBlock = response.content.findLast(b => b.type === 'text');
-  return textBlock ? textBlock.text.trim() : 'Research could not be completed.';
+  return textBlock ? textBlock.text.trim() : '<p>Research could not be completed.</p>';
 }
 
 // ── Step 4: Write HubSpot note ────────────────────────────────────────────────
 
-async function writeHubSpotNote(contactId, briefText, taskTitle) {
+async function writeHubSpotNote(contactId, briefHtml, taskTitle) {
   const now = new Date();
-  const datetime = now.toLocaleString('en-GB', {
+  const formattedDate = now.toLocaleString('en-GB', {
     day: '2-digit', month: 'short', year: 'numeric',
     hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
   });
 
-  const noteBody = `🔍 Pre-call Research Brief\n\nPrepared automatically by WMC Research Agent\n\n${briefText}\n\n---\nGenerated ${datetime} · Task: ${taskTitle}`;
+  const noteBody = `<p>🔍 <strong>Pre-call Research Brief</strong> — prepared automatically by WMC Research Agent</p><hr>${briefHtml}<hr><p><em>Generated ${formattedDate} · Task: ${taskTitle}</em></p>`;
 
   let response;
   try {
@@ -283,6 +309,7 @@ async function processTask(taskId, taskTitle) {
 
     currentlyProcessing = { taskId, contactName, step: 'researching' };
     const briefText = await researchCompany({
+      contactName,
       companyName,
       industry: company?.industry,
       employeeCount: company?.numberofemployees,
