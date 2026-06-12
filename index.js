@@ -152,6 +152,30 @@ async function getContactCompany(contactId) {
   }
 }
 
+async function lookupContactByEmail(email) {
+  let resp;
+  try {
+    resp = await axios.post(
+      'https://api.hubapi.com/crm/v3/objects/contacts/search',
+      {
+        filterGroups: [{ filters: [{ propertyName: 'email', operator: 'EQ', value: email }] }],
+        properties: [
+          'firstname', 'lastname', 'email', 'company', 'jobtitle',
+          'hs_lead_status', 'recent_conversion_event_name',
+        ],
+        limit: 1,
+      },
+      { headers: HUBSPOT_HEADERS() }
+    );
+  } catch (error) {
+    console.error('[Research Agent] HubSpot contact search by email failed:', error.response?.status, JSON.stringify(error.response?.data));
+    throw error;
+  }
+  const results = resp.data.results || [];
+  if (!results.length) return null;
+  return { id: results[0].id, ...results[0].properties };
+}
+
 function buildDownloadContext(contact, taskTitle) {
   const parts = [];
   if (taskTitle && taskTitle.toLowerCase().includes('download')) parts.push(taskTitle);
@@ -470,6 +494,96 @@ app.post('/api/briefs/retry-failed', (req, res) => {
   }
   retryFailedBriefs();
   res.json({ success: true, message: 'Retry of failed briefs triggered' });
+});
+
+app.post('/api/briefs/manual', async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${process.env.AGENT_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'email is required' });
+
+  const timestamp = Date.now();
+  currentlyProcessing = { taskId: `manual-${timestamp}`, contactName: null, step: 'fetching_contact' };
+
+  let contact;
+  try {
+    contact = await lookupContactByEmail(email);
+  } catch (err) {
+    currentlyProcessing = null;
+    return res.status(500).json({ success: false, error: 'Failed to search HubSpot: ' + err.message });
+  }
+
+  if (!contact) {
+    currentlyProcessing = null;
+    return res.status(404).json({ error: 'No HubSpot contact found with that email' });
+  }
+
+  const contactId = contact.id;
+  const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || contact.email || 'Unknown';
+  const taskId = `manual-${timestamp}-${contactId}`;
+  const taskTitle = 'Manual research brief';
+
+  try {
+    await pool.query(
+      `INSERT INTO research_briefs (task_id, task_title, status) VALUES ($1, $2, 'pending')`,
+      [taskId, taskTitle]
+    );
+  } catch (err) {
+    currentlyProcessing = null;
+    return res.status(500).json({ success: false, error: 'Database error: ' + err.message });
+  }
+
+  try {
+    currentlyProcessing = { taskId, contactName, step: 'fetching_company' };
+    const company = await getContactCompany(contactId);
+    const companyName = company?.name || contact.company || 'Unknown';
+
+    const contextParts = [];
+    if (contact.recent_conversion_event_name) contextParts.push(contact.recent_conversion_event_name);
+    if (contact.hs_lead_status) contextParts.push(`Lead status: ${contact.hs_lead_status}`);
+    if (contact.jobtitle) contextParts.push(`Role: ${contact.jobtitle}`);
+    const downloadContext = contextParts.join(' | ') || 'General enquiry — no specific download/enquiry recorded';
+
+    await pool.query(
+      `UPDATE research_briefs SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4 WHERE task_id = $5`,
+      [contactId, contactName, companyName, downloadContext, taskId]
+    );
+
+    currentlyProcessing = { taskId, contactName, step: 'researching' };
+    const briefText = await researchCompany({
+      taskId,
+      contactName,
+      companyName,
+      industry: company?.industry,
+      employeeCount: company?.numberofemployees,
+      city: company?.city,
+      jobTitle: contact.jobtitle,
+      downloadContext,
+    });
+
+    currentlyProcessing = { taskId, contactName, step: 'writing_note' };
+    const noteId = await writeHubSpotNote(contactId, briefText, taskTitle);
+
+    await pool.query(
+      `UPDATE research_briefs SET status = 'completed', brief_text = $1, hubspot_note_id = $2 WHERE task_id = $3`,
+      [briefText, noteId, taskId]
+    );
+
+    const { rows } = await pool.query('SELECT id FROM research_briefs WHERE task_id = $1', [taskId]);
+    res.json({ success: true, briefId: rows[0]?.id, contactName, companyName });
+  } catch (err) {
+    console.error(`[Research Agent] Manual brief for ${email} failed:`, err.message);
+    await pool.query(
+      `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
+      [err.message.slice(0, 1000), taskId]
+    ).catch(() => {});
+    res.status(500).json({ success: false, error: err.message });
+  } finally {
+    currentlyProcessing = null;
+  }
 });
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
