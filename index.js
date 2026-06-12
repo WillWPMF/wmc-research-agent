@@ -235,8 +235,12 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
 
 **Paragraphs** — keep each paragraph to 2–3 sentences maximum. Use multiple <p> tags rather than one dense block.
 
-**Sources** — cite inline immediately after the claim they support, not bunched at the end:
+**Inline citations** — cite immediately after the specific claim they support:
 [claim text] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span>
+
+**End-of-section sources line** — every section must end with a consolidated sources line listing all URLs used in that section (deduplicated). Use this exact format:
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
+If a section has no citations at all, write: <p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: none found</p>
 
 **Section separators** — place a horizontal rule between every section:
 <hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
@@ -245,12 +249,14 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
 
 <p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">📞 SUGGESTED OPENER</strong></p>
 <p style="font-size:15px;font-style:italic;">"[A single literal sentence Olly could say to open the call, referencing one specific verified fact from this research. Must be ready-to-say, not a strategy description. Only reference things confirmed via search in this session.]"</p>
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL]" style="color:#A0AEC0;">[domain]</a></p>
 
 <hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
 
 <p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">🏢 COMPANY SNAPSHOT</strong></p>
 <p>[What the company does, approximate size, sector, UK/international presence.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
 <p>[Recent trajectory — growing, stable, restructuring, or in flux. Keep to 2–3 sentences max.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
 
 <hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
 
@@ -260,6 +266,7 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
   <li>[Second specific fact — e.g. CEO announced 150 redundancies Mar 2025, rebranded after merger.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
   <li>[Wellbeing or HR signal if found — e.g. appointed Head of People &amp; Culture, LinkedIn post about mental health awareness week, signed Time to Change pledge.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
 </ul>
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
 
 <hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
 
@@ -268,12 +275,14 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
   <li>[Each finding as its own bullet — e.g. "EAP provided by Bupa (named on careers page)", "LinkedIn post about their MHFAiders programme Apr 2024", "Careers page mentions neurodiversity support". Name any external provider explicitly — it is a competitor.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
 </ul>
 <p>[One summary sentence concluding from the findings — e.g. "Already running MHFA but no refresher mention — possible renewal conversation." If nothing found across all searches, write exactly: "No public activity found around MHFA, neurodiversity, menopause or wellbeing training — suggests this may be new territory for the organisation."]</p>
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
 
 <hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
 
 <p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">👤 ABOUT ${contactName ? contactName.toUpperCase() : 'THE CONTACT'}</strong></p>
 <p>[Their verified role EXACTLY as written on their confirmed profile — do not paraphrase. Tenure and current company.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
 <p>[Previous roles or background if found. If the profile could not be verified as matching both name and company, say so. If little is publicly available, write: "Limited public profile found."]</p>
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL]" style="color:#A0AEC0;">[domain]</a></p>
 
 <hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
 
@@ -281,10 +290,12 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
 <p><strong>The situation:</strong> [1–2 sentences on the context or trigger — what they downloaded, what is happening at the company, what their role implies.]</p>
 <p><strong>The opening:</strong> [1–2 sentences on how to connect their specific situation to WMC's services.]</p>
 <p><strong>The ask:</strong> [1 sentence on what to propose or move toward in this call.]</p>
+<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
 
 ## Rules
 - The Suggested Opener must reference one specific verified fact — not a generic greeting
 - Every factual claim must have an inline source citation — if you cannot cite it, do not include it
+- Every section must end with its own sources line (deduplicated list of all URLs used in that section)
 - Keep every paragraph to 2–3 sentences — no dense text walls
 - If a section has nothing after trying multiple searches, write the fallback text specified above for that section
 - Do not pad with generic industry statements — one real cited fact beats three generic ones
