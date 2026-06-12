@@ -23,6 +23,7 @@ const HUBSPOT_HEADERS = () => ({
 });
 
 let lastRun = null;
+let currentlyProcessing = null;
 
 // ── DB init ───────────────────────────────────────────────────────────────────
 
@@ -53,22 +54,28 @@ async function fetchTodaysTasks() {
   const endOfDay = new Date();
   endOfDay.setUTCHours(23, 59, 59, 999);
 
-  const resp = await axios.post(
-    'https://api.hubapi.com/crm/v3/objects/tasks/search',
-    {
-      filterGroups: [{
-        filters: [
-          { propertyName: 'hs_task_status', operator: 'EQ', value: 'NOT_STARTED' },
-          { propertyName: 'hubspot_owner_id', operator: 'EQ', value: HUBSPOT_OWNER_ID },
-          { propertyName: 'hs_timestamp', operator: 'GTE', value: String(startOfDay.getTime()) },
-          { propertyName: 'hs_timestamp', operator: 'LTE', value: String(endOfDay.getTime()) },
-        ],
-      }],
-      properties: ['hs_task_subject', 'hubspot_owner_id', 'hs_timestamp', 'hs_task_status'],
-      limit: 100,
-    },
-    { headers: HUBSPOT_HEADERS() }
-  );
+  let resp;
+  try {
+    resp = await axios.post(
+      'https://api.hubapi.com/crm/v3/objects/tasks/search',
+      {
+        filterGroups: [{
+          filters: [
+            { propertyName: 'hs_task_status', operator: 'EQ', value: 'NOT_STARTED' },
+            { propertyName: 'hubspot_owner_id', operator: 'EQ', value: HUBSPOT_OWNER_ID },
+            { propertyName: 'hs_timestamp', operator: 'GTE', value: String(startOfDay.getTime()) },
+            { propertyName: 'hs_timestamp', operator: 'LTE', value: String(endOfDay.getTime()) },
+          ],
+        }],
+        properties: ['hs_task_subject', 'hubspot_owner_id', 'hs_timestamp', 'hs_task_status'],
+        limit: 100,
+      },
+      { headers: HUBSPOT_HEADERS() }
+    );
+  } catch (error) {
+    console.error('[Research Agent] HubSpot task search failed:', error.response?.status, JSON.stringify(error.response?.data));
+    throw error;
+  }
 
   return resp.data.results || [];
 }
@@ -76,45 +83,61 @@ async function fetchTodaysTasks() {
 // ── Step 2: Get contact and company ──────────────────────────────────────────
 
 async function getTaskContact(taskId) {
-  const assocResp = await axios.get(
-    `https://api.hubapi.com/crm/v4/objects/tasks/${taskId}/associations/contacts`,
-    { headers: HUBSPOT_HEADERS() }
-  );
+  let assocResults;
+  try {
+    const assocResp = await axios.get(
+      `https://api.hubapi.com/crm/v4/objects/tasks/${taskId}/associations/contacts`,
+      { headers: HUBSPOT_HEADERS() }
+    );
+    assocResults = assocResp.data.results || [];
+  } catch (error) {
+    console.error('[Research Agent] HubSpot task associations fetch failed:', error.response?.status, JSON.stringify(error.response?.data));
+    throw error;
+  }
 
-  const results = assocResp.data.results || [];
-  if (!results.length) return null;
+  if (!assocResults.length) return null;
 
-  const contactId = String(results[0].toObjectId);
+  const contactId = String(assocResults[0].toObjectId);
 
-  const contactResp = await axios.get(
-    `https://api.hubapi.com/crm/v3/objects/contacts/${contactId}`,
-    {
-      params: {
-        properties: [
-          'firstname', 'lastname', 'email', 'company', 'jobtitle',
-          'hs_lead_status', 'recent_conversion_event_name', 'hs_analytics_last_referrer',
-          'notes_last_contacted',
-        ].join(','),
-      },
-      headers: HUBSPOT_HEADERS(),
-    }
-  );
-
-  return { id: contactId, ...contactResp.data.properties };
+  try {
+    const contactResp = await axios.get(
+      `https://api.hubapi.com/crm/v3/objects/contacts/${contactId}`,
+      {
+        params: {
+          properties: [
+            'firstname', 'lastname', 'email', 'company', 'jobtitle',
+            'hs_lead_status', 'recent_conversion_event_name', 'hs_analytics_last_referrer',
+            'notes_last_contacted',
+          ].join(','),
+        },
+        headers: HUBSPOT_HEADERS(),
+      }
+    );
+    return { id: contactId, ...contactResp.data.properties };
+  } catch (error) {
+    console.error('[Research Agent] HubSpot contact fetch failed:', error.response?.status, JSON.stringify(error.response?.data));
+    throw error;
+  }
 }
 
 async function getContactCompany(contactId) {
+  let assocResults;
   try {
     const assocResp = await axios.get(
       `https://api.hubapi.com/crm/v4/objects/contacts/${contactId}/associations/companies`,
       { headers: HUBSPOT_HEADERS() }
     );
+    assocResults = assocResp.data.results || [];
+  } catch (error) {
+    console.error('[Research Agent] HubSpot company associations fetch failed:', error.response?.status, JSON.stringify(error.response?.data));
+    return null;
+  }
 
-    const results = assocResp.data.results || [];
-    if (!results.length) return null;
+  if (!assocResults.length) return null;
 
-    const companyId = String(results[0].toObjectId);
+  const companyId = String(assocResults[0].toObjectId);
 
+  try {
     const companyResp = await axios.get(
       `https://api.hubapi.com/crm/v3/objects/companies/${companyId}`,
       {
@@ -122,9 +145,9 @@ async function getContactCompany(contactId) {
         headers: HUBSPOT_HEADERS(),
       }
     );
-
     return companyResp.data.properties;
-  } catch (_) {
+  } catch (error) {
+    console.error('[Research Agent] HubSpot company fetch failed:', error.response?.status, JSON.stringify(error.response?.data));
     return null;
   }
 }
@@ -171,17 +194,23 @@ Please research this company and produce the numbered brief.`;
   console.log('[Research Agent] API key prefix:', process.env.ANTHROPIC_API_KEY?.substring(0, 15));
   console.log('[Research Agent] API key suffix:', process.env.ANTHROPIC_API_KEY?.substring(process.env.ANTHROPIC_API_KEY.length - 5));
 
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 2000,
-    tools: [{
-      type: 'web_search_20250305',
-      name: 'web_search',
-      max_uses: 5,
-    }],
-    system: systemPrompt,
-    messages: [{ role: 'user', content: userMessage }],
-  });
+  let response;
+  try {
+    response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 2000,
+      tools: [{
+        type: 'web_search_20250305',
+        name: 'web_search',
+        max_uses: 5,
+      }],
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }],
+    });
+  } catch (error) {
+    console.error('[Research Agent] Anthropic research call failed:', error.status, JSON.stringify(error.error ?? error.message));
+    throw error;
+  }
 
   const textBlock = response.content.findLast(b => b.type === 'text');
   return textBlock ? textBlock.text.trim() : 'Research could not be completed.';
@@ -198,20 +227,26 @@ async function writeHubSpotNote(contactId, briefText, taskTitle) {
 
   const noteBody = `🔍 Pre-call Research Brief\n\nPrepared automatically by WMC Research Agent\n\n${briefText}\n\n---\nGenerated ${datetime} · Task: ${taskTitle}`;
 
-  const response = await axios.post(
-    'https://api.hubapi.com/crm/v3/objects/notes',
-    {
-      properties: {
-        hs_note_body: noteBody,
-        hs_timestamp: String(now.getTime()),
+  let response;
+  try {
+    response = await axios.post(
+      'https://api.hubapi.com/crm/v3/objects/notes',
+      {
+        properties: {
+          hs_note_body: noteBody,
+          hs_timestamp: String(now.getTime()),
+        },
+        associations: [{
+          to: { id: contactId },
+          types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }],
+        }],
       },
-      associations: [{
-        to: { id: contactId },
-        types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }],
-      }],
-    },
-    { headers: HUBSPOT_HEADERS() }
-  );
+      { headers: HUBSPOT_HEADERS() }
+    );
+  } catch (error) {
+    console.error('[Research Agent] HubSpot note creation failed:', error.response?.status, JSON.stringify(error.response?.data));
+    throw error;
+  }
 
   return response.data.id;
 }
@@ -219,45 +254,55 @@ async function writeHubSpotNote(contactId, briefText, taskTitle) {
 // ── Per-task processing (shared by main run and retry) ───────────────────────
 
 async function processTask(taskId, taskTitle) {
-  const contact = await getTaskContact(taskId);
+  try {
+    currentlyProcessing = { taskId, contactName: null, step: 'fetching contact' };
 
-  if (!contact) {
+    const contact = await getTaskContact(taskId);
+
+    if (!contact) {
+      await pool.query(
+        `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
+        ['No contact associated with this task', taskId]
+      );
+      return;
+    }
+
+    const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || 'Unknown';
+
+    currentlyProcessing = { taskId, contactName, step: 'fetching company' };
+    const company = await getContactCompany(contact.id);
+    const companyName = company?.name || contact.company || 'Unknown';
+    const downloadContext = buildDownloadContext(contact, taskTitle);
+
     await pool.query(
-      `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
-      ['No contact associated with this task', taskId]
+      `UPDATE research_briefs
+       SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4
+       WHERE task_id = $5`,
+      [contact.id, contactName, companyName, downloadContext, taskId]
     );
-    return;
+
+    currentlyProcessing = { taskId, contactName, step: 'researching' };
+    const briefText = await researchCompany({
+      companyName,
+      industry: company?.industry,
+      employeeCount: company?.numberofemployees,
+      city: company?.city,
+      jobTitle: contact.jobtitle,
+      downloadContext,
+    });
+
+    currentlyProcessing = { taskId, contactName, step: 'writing note' };
+    const noteId = await writeHubSpotNote(contact.id, briefText, taskTitle);
+
+    await pool.query(
+      `UPDATE research_briefs
+       SET status = 'completed', brief_text = $1, hubspot_note_id = $2
+       WHERE task_id = $3`,
+      [briefText, noteId, taskId]
+    );
+  } finally {
+    currentlyProcessing = null;
   }
-
-  const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || 'Unknown';
-  const company = await getContactCompany(contact.id);
-  const companyName = company?.name || contact.company || 'Unknown';
-  const downloadContext = buildDownloadContext(contact, taskTitle);
-
-  await pool.query(
-    `UPDATE research_briefs
-     SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4
-     WHERE task_id = $5`,
-    [contact.id, contactName, companyName, downloadContext, taskId]
-  );
-
-  const briefText = await researchCompany({
-    companyName,
-    industry: company?.industry,
-    employeeCount: company?.numberofemployees,
-    city: company?.city,
-    jobTitle: contact.jobtitle,
-    downloadContext,
-  });
-
-  const noteId = await writeHubSpotNote(contact.id, briefText, taskTitle);
-
-  await pool.query(
-    `UPDATE research_briefs
-     SET status = 'completed', brief_text = $1, hubspot_note_id = $2
-     WHERE task_id = $3`,
-    [briefText, noteId, taskId]
-  );
 }
 
 // ── Main agent ────────────────────────────────────────────────────────────────
@@ -348,6 +393,8 @@ async function retryFailedBriefs() {
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 app.get('/health', (req, res) => res.json({ status: 'ok', lastRun }));
+
+app.get('/api/status', (req, res) => res.json(currentlyProcessing));
 
 app.get('/api/briefs', async (req, res) => {
   try {
