@@ -209,7 +209,8 @@ Work through these searches in order. Do not skip any. Try variations if a searc
 1. Company news: search "[company name] news 2024 2025" then "[company name] funding growth restructuring layoffs"
 2. Company LinkedIn: search "[company name] LinkedIn" — look for their company page, recent posts about culture, hiring, wellbeing, events
 3. HR and wellbeing signals: search "[company name] mental health wellbeing EAP HR" and "[company name] careers hiring people"
-4. Contact person — identity verification required:
+4. Wellbeing provider check: search "[company name] employee assistance programme", "[company name] EAP provider", "[company name] wellbeing partner", "[company name] mental health first aid training" — note any named providers found
+5. Contact person — identity verification required:
    a. Search "[contact name] [company name] LinkedIn" then "[contact name] [company name]"
    b. Before using any result, confirm it matches BOTH the name AND the company already known from HubSpot. If the company in the search result does not match the HubSpot company, do not use that profile.
    c. If no result matches both name and company with confidence, write "Could not find a verified profile matching both name and company" — do not use an unverified profile.
@@ -217,6 +218,9 @@ Work through these searches in order. Do not skip any. Try variations if a searc
 ## Output format — HTML only
 
 Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation outside the tags. Use exactly this structure:
+
+<h3>📞 Suggested Opener</h3>
+<p style="font-size:15px;font-style:italic;">"[A single literal sentence Olly could say to open the call, referencing one specific verified fact found in this research — e.g. a recent news item, an initiative, or what the contact downloaded. This must be a ready-to-say sentence, not a strategy description. Only reference things confirmed via search in this session.]"</p>
 
 <h3>🏢 Company Snapshot</h3>
 <p>[2–3 sentences: what the company does, approximate size, sector, UK/international locations, recent trajectory — growing, stable, restructuring, or in flux]</p>
@@ -229,6 +233,10 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
   <li>[Wellbeing or HR signal if found — e.g. recently appointed a Head of People &amp; Culture, LinkedIn posts about mental health awareness week, signed the Time to Change pledge] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
 </ul>
 
+<h3>🔍 Current Wellbeing Provider</h3>
+<p>[If a current or past EAP/wellbeing/MHFA provider was found, name it specifically and describe what was found. If nothing was found after searching, write exactly: "No current wellbeing or EAP provider identified — may indicate an open opportunity or undocumented arrangement."]</p>
+<p style="font-size:11px;color:#718096;">Sources: <a href="[URL]">[domain]</a></p>
+
 <h3>👤 About ${contactName || 'the Contact'}</h3>
 <p>[Their verified role EXACTLY as found on their confirmed LinkedIn or profile — do not paraphrase. Note their tenure and previous roles if found. If the profile could not be verified as matching both name and company, say so rather than guessing. If little is publicly available, be honest: "Limited public profile found."]</p>
 <p style="font-size:11px;color:#718096;">Sources: <a href="[URL]">[domain]</a></p>
@@ -238,12 +246,13 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
 <p style="font-size:11px;color:#718096;">Sources: <a href="[URL1]">[domain1]</a>, <a href="[URL2]">[domain2]</a></p>
 
 ## Rules
+- The Suggested Opener must reference one specific verified fact — not a generic greeting
 - Every fact in Recent News &amp; Signals must be something you found via search and must have a source link — if you cannot cite a source, do not include the claim
 - Every bullet point and the About section must have at least one source link
-- If a section genuinely has nothing after trying multiple searches, write exactly: <em>No specific information found.</em>
+- If a section genuinely has nothing after trying multiple searches, write the fallback text specified above for that section
 - Do not pad with generic industry statements — one real cited fact is worth more than three generic ones
 - The Recommended Angle must be tailored to this specific company and contact
-- Output nothing outside the four HTML sections above`;
+- Output nothing outside the six HTML sections above`;
 
   const userMessage = `Company name: ${companyName}
 Industry: ${industry || 'Not specified'}
@@ -268,7 +277,7 @@ Research this company and contact thoroughly using web search, then produce the 
       tools: [{
         type: 'web_search_20250305',
         name: 'web_search',
-        max_uses: 8,
+        max_uses: 10,
       }],
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
