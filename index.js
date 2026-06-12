@@ -166,6 +166,11 @@ What they downloaded or enquired about: ${downloadContext}
 
 Please research this company and produce the numbered brief.`;
 
+  console.log('[Research Agent] API key present:', !!process.env.ANTHROPIC_API_KEY);
+  console.log('[Research Agent] API key length:', process.env.ANTHROPIC_API_KEY?.length);
+  console.log('[Research Agent] API key prefix:', process.env.ANTHROPIC_API_KEY?.substring(0, 15));
+  console.log('[Research Agent] API key suffix:', process.env.ANTHROPIC_API_KEY?.substring(process.env.ANTHROPIC_API_KEY.length - 5));
+
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 2000,
@@ -211,6 +216,50 @@ async function writeHubSpotNote(contactId, briefText, taskTitle) {
   return response.data.id;
 }
 
+// ── Per-task processing (shared by main run and retry) ───────────────────────
+
+async function processTask(taskId, taskTitle) {
+  const contact = await getTaskContact(taskId);
+
+  if (!contact) {
+    await pool.query(
+      `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
+      ['No contact associated with this task', taskId]
+    );
+    return;
+  }
+
+  const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || 'Unknown';
+  const company = await getContactCompany(contact.id);
+  const companyName = company?.name || contact.company || 'Unknown';
+  const downloadContext = buildDownloadContext(contact, taskTitle);
+
+  await pool.query(
+    `UPDATE research_briefs
+     SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4
+     WHERE task_id = $5`,
+    [contact.id, contactName, companyName, downloadContext, taskId]
+  );
+
+  const briefText = await researchCompany({
+    companyName,
+    industry: company?.industry,
+    employeeCount: company?.numberofemployees,
+    city: company?.city,
+    jobTitle: contact.jobtitle,
+    downloadContext,
+  });
+
+  const noteId = await writeHubSpotNote(contact.id, briefText, taskTitle);
+
+  await pool.query(
+    `UPDATE research_briefs
+     SET status = 'completed', brief_text = $1, hubspot_note_id = $2
+     WHERE task_id = $3`,
+    [briefText, noteId, taskId]
+  );
+}
+
 // ── Main agent ────────────────────────────────────────────────────────────────
 
 async function runResearchAgent() {
@@ -241,47 +290,7 @@ async function runResearchAgent() {
       );
 
       try {
-        const contact = await getTaskContact(taskId);
-
-        if (!contact) {
-          await pool.query(
-            `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
-            ['No contact associated with this task', taskId]
-          );
-          processed++;
-          continue;
-        }
-
-        const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || 'Unknown';
-        const company = await getContactCompany(contact.id);
-        const companyName = company?.name || contact.company || 'Unknown';
-        const downloadContext = buildDownloadContext(contact, taskTitle);
-
-        await pool.query(
-          `UPDATE research_briefs
-           SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4
-           WHERE task_id = $5`,
-          [contact.id, contactName, companyName, downloadContext, taskId]
-        );
-
-        const briefText = await researchCompany({
-          companyName,
-          industry: company?.industry,
-          employeeCount: company?.numberofemployees,
-          city: company?.city,
-          jobTitle: contact.jobtitle,
-          downloadContext,
-        });
-
-        const noteId = await writeHubSpotNote(contact.id, briefText, taskTitle);
-
-        await pool.query(
-          `UPDATE research_briefs
-           SET status = 'completed', brief_text = $1, hubspot_note_id = $2
-           WHERE task_id = $3`,
-          [briefText, noteId, taskId]
-        );
-
+        await processTask(taskId, taskTitle);
         processed++;
       } catch (taskErr) {
         console.error(`[Research Agent] Task ${taskId} failed:`, taskErr.message);
@@ -298,6 +307,42 @@ async function runResearchAgent() {
 
   lastRun = new Date().toISOString();
   console.log(`[Research Agent] Run complete — processed ${processed} tasks`);
+}
+
+async function retryFailedBriefs() {
+  console.log(`[Research Agent] Starting retry of failed briefs — ${new Date().toISOString()}`);
+  let retried = 0;
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT task_id, task_title FROM research_briefs WHERE status = 'failed'`
+    );
+
+    console.log(`[Research Agent] Found ${rows.length} failed briefs to retry`);
+
+    for (const row of rows) {
+      await pool.query(
+        `UPDATE research_briefs SET status = 'pending', error_text = NULL WHERE task_id = $1`,
+        [row.task_id]
+      );
+
+      try {
+        await processTask(row.task_id, row.task_title || 'Untitled task');
+        retried++;
+      } catch (taskErr) {
+        console.error(`[Research Agent] Retry of task ${row.task_id} failed:`, taskErr.message);
+        await pool.query(
+          `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
+          [taskErr.message.slice(0, 1000), row.task_id]
+        );
+        retried++;
+      }
+    }
+  } catch (outerErr) {
+    console.error('[Research Agent] Retry run failed:', outerErr.message);
+  }
+
+  console.log(`[Research Agent] Retry complete — processed ${retried} briefs`);
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -337,6 +382,15 @@ app.post('/api/briefs/trigger', (req, res) => {
   }
   runResearchAgent();
   res.json({ success: true, message: 'Research agent triggered' });
+});
+
+app.post('/api/briefs/retry-failed', (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${process.env.AGENT_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  retryFailedBriefs();
+  res.json({ success: true, message: 'Retry of failed briefs triggered' });
 });
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
