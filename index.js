@@ -209,7 +209,16 @@ Work through these searches in order. Do not skip any. Try variations if a searc
 1. Company news: search "[company name] news 2024 2025" then "[company name] funding growth restructuring layoffs"
 2. Company LinkedIn: search "[company name] LinkedIn" — look for their company page, recent posts about culture, hiring, wellbeing, events
 3. HR and wellbeing signals: search "[company name] mental health wellbeing EAP HR" and "[company name] careers hiring people"
-4. Wellbeing provider check: search "[company name] employee assistance programme", "[company name] EAP provider", "[company name] wellbeing partner", "[company name] mental health first aid training" — note any named providers found
+4. Wellbeing activity check — run all of these searches:
+   - "[company name] employee assistance programme"
+   - "[company name] EAP provider"
+   - "[company name] wellbeing partner"
+   - "[company name] mental health first aid" / "[company name] MHFA"
+   - "[company name] wellbeing training"
+   - "[company name] neurodiversity"
+   - "[company name] menopause support"
+   - "[company name] employee wellbeing programme"
+   For each search: note any named external providers (these are competitors), any public mentions on LinkedIn posts, careers pages, press releases, or company blogs, and cite the URL. The absence of findings is itself a useful signal — track it.
 5. Contact person — identity verification required:
    a. Search "[contact name] [company name] LinkedIn" then "[contact name] [company name]"
    b. Before using any result, confirm it matches BOTH the name AND the company already known from HubSpot. If the company in the search result does not match the HubSpot company, do not use that profile.
@@ -233,8 +242,11 @@ Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation o
   <li>[Wellbeing or HR signal if found — e.g. recently appointed a Head of People &amp; Culture, LinkedIn posts about mental health awareness week, signed the Time to Change pledge] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
 </ul>
 
-<h3>🔍 Current Wellbeing Provider</h3>
-<p>[If a current or past EAP/wellbeing/MHFA provider was found, name it specifically and describe what was found. If nothing was found after searching, write exactly: "No current wellbeing or EAP provider identified — may indicate an open opportunity or undocumented arrangement."]</p>
+<h3>🔍 Wellbeing Activity &amp; Provider Check</h3>
+<ul>
+  <li>[Each finding as its own bullet — e.g. "Mentioned MHFA programme on LinkedIn, Apr 2024", "EAP provided by Bupa EAP (named on careers page)", "Careers page references neurodiversity support". If a named external training provider or EAP supplier is found, name it explicitly — it is a competitor.] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
+</ul>
+<p>[One summary sentence drawing a conclusion from the findings — e.g. "Already running MHFA but no public mention of refresher training — possible renewal conversation" or "No public activity found around MHFA, neurodiversity, menopause or wellbeing training — suggests this may be new territory for the organisation."]</p>
 <p style="font-size:11px;color:#718096;">Sources: <a href="[URL]">[domain]</a></p>
 
 <h3>👤 About ${contactName || 'the Contact'}</h3>
@@ -277,7 +289,7 @@ Research this company and contact thoroughly using web search, then produce the 
       tools: [{
         type: 'web_search_20250305',
         name: 'web_search',
-        max_uses: 10,
+        max_uses: 12,
       }],
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
