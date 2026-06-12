@@ -164,7 +164,7 @@ function buildDownloadContext(contact, taskTitle) {
 
 // ── Step 3: Research company with Claude ─────────────────────────────────────
 
-async function researchCompany({ contactName, companyName, industry, employeeCount, city, jobTitle, downloadContext }) {
+async function researchCompany({ taskId, contactName, companyName, industry, employeeCount, city, jobTitle, downloadContext }) {
   const systemPrompt = `You are a research assistant for The Workplace Mindfulness Co., a UK-based workplace wellbeing training company. Your job is to prepare a detailed, genuinely useful pre-call research brief before a sales call.
 
 We deliver bespoke mental health and wellbeing training and programmes to organisations. Our core offerings include Mental Health Awareness, Mental Health First Aider (MHFA) training, MHFA Refresher, and wellbeing programmes covering resilience, menopause, neurodiversity and more.
@@ -224,7 +224,7 @@ Research this company and contact thoroughly using web search, then produce the 
   try {
     response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
+      max_tokens: 4096,
       tools: [{
         type: 'web_search_20250305',
         name: 'web_search',
@@ -236,6 +236,10 @@ Research this company and contact thoroughly using web search, then produce the 
   } catch (error) {
     console.error('[Research Agent] Anthropic research call failed:', error.status, JSON.stringify(error.error ?? error.message));
     throw error;
+  }
+
+  if (response.stop_reason === 'max_tokens') {
+    console.warn('[Research Agent] Response truncated due to max_tokens for task:', taskId);
   }
 
   const textBlock = response.content.findLast(b => b.type === 'text');
@@ -309,6 +313,7 @@ async function processTask(taskId, taskTitle) {
 
     currentlyProcessing = { taskId, contactName, step: 'researching' };
     const briefText = await researchCompany({
+      taskId,
       contactName,
       companyName,
       industry: company?.industry,
