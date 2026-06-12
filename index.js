@@ -255,7 +255,7 @@ async function writeHubSpotNote(contactId, briefText, taskTitle) {
 
 async function processTask(taskId, taskTitle) {
   try {
-    currentlyProcessing = { taskId, contactName: null, step: 'fetching contact' };
+    currentlyProcessing = { taskId, contactName: null, step: 'fetching_contact' };
 
     const contact = await getTaskContact(taskId);
 
@@ -269,7 +269,7 @@ async function processTask(taskId, taskTitle) {
 
     const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || 'Unknown';
 
-    currentlyProcessing = { taskId, contactName, step: 'fetching company' };
+    currentlyProcessing = { taskId, contactName, step: 'fetching_company' };
     const company = await getContactCompany(contact.id);
     const companyName = company?.name || contact.company || 'Unknown';
     const downloadContext = buildDownloadContext(contact, taskTitle);
@@ -291,7 +291,7 @@ async function processTask(taskId, taskTitle) {
       downloadContext,
     });
 
-    currentlyProcessing = { taskId, contactName, step: 'writing note' };
+    currentlyProcessing = { taskId, contactName, step: 'writing_note' };
     const noteId = await writeHubSpotNote(contact.id, briefText, taskTitle);
 
     await pool.query(
