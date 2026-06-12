@@ -46,6 +46,10 @@ async function initDb() {
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS input_tokens INTEGER`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS output_tokens INTEGER`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS estimated_cost_usd DECIMAL(10,4)`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS skip_reason VARCHAR(255)`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS previous_brief_id INTEGER REFERENCES research_briefs(id)`);
+  await pool.query(`UPDATE research_briefs SET status = 'queued', updated_at = NOW() WHERE status = 'processing'`);
   await pool.query(`CREATE TABLE IF NOT EXISTS agent_settings (
     id INTEGER PRIMARY KEY DEFAULT 1,
     enabled BOOLEAN DEFAULT true,
@@ -420,11 +424,16 @@ async function processTask(taskId, taskTitle) {
   try {
     currentlyProcessing = { taskId, contactName: null, step: 'fetching_contact' };
 
+    await pool.query(
+      `UPDATE research_briefs SET status = 'processing', updated_at = NOW() WHERE task_id = $1`,
+      [taskId]
+    ).catch(() => {});
+
     const contact = await getTaskContact(taskId);
 
     if (!contact) {
       await pool.query(
-        `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
+        `UPDATE research_briefs SET status = 'failed', error_text = $1, updated_at = NOW() WHERE task_id = $2`,
         ['No contact associated with this task', taskId]
       );
       return;
@@ -439,7 +448,7 @@ async function processTask(taskId, taskTitle) {
 
     await pool.query(
       `UPDATE research_briefs
-       SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4
+       SET contact_id = $1, contact_name = $2, company_name = $3, download_context = $4, updated_at = NOW()
        WHERE task_id = $5`,
       [contact.id, contactName, companyName, downloadContext, taskId]
     );
@@ -462,13 +471,106 @@ async function processTask(taskId, taskTitle) {
     await pool.query(
       `UPDATE research_briefs
        SET status = 'completed', brief_text = $1, hubspot_note_id = $2,
-           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5
+           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5, updated_at = NOW()
        WHERE task_id = $6`,
       [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, taskId]
     );
   } finally {
     currentlyProcessing = null;
   }
+}
+
+// ── Queue population ─────────────────────────────────────────────────────────
+
+async function populateQueue(settings) {
+  let tasks;
+  try {
+    tasks = await fetchTasksToProcess(settings);
+  } catch (err) {
+    console.error('[Research Agent] populateQueue: task fetch failed:', err.message);
+    return { queued: 0, skipped: 0 };
+  }
+
+  const alreadyQueued = new Set();
+  const { rows: existingActive } = await pool.query(
+    `SELECT DISTINCT contact_id FROM research_briefs WHERE status IN ('queued', 'processing') AND contact_id IS NOT NULL`
+  ).catch(() => ({ rows: [] }));
+  existingActive.forEach(r => { if (r.contact_id) alreadyQueued.add(r.contact_id); });
+
+  let queued = 0;
+  let skipped = 0;
+
+  for (const task of tasks) {
+    const taskId = task.id;
+    const taskTitle = task.properties.hs_task_subject || 'Untitled task';
+    const taskDueDate = task.properties.hs_timestamp
+      ? new Date(parseInt(task.properties.hs_timestamp))
+      : null;
+
+    const existing = await pool.query(
+      'SELECT id FROM research_briefs WHERE task_id = $1', [taskId]
+    ).catch(() => ({ rows: [] }));
+    if (existing.rows.length) continue;
+
+    let contact;
+    try {
+      contact = await getTaskContact(taskId);
+    } catch (err) {
+      console.error(`[Research Agent] populateQueue: contact fetch failed for ${taskId}:`, err.message);
+      continue;
+    }
+    if (!contact) continue;
+
+    const contactId = contact.id;
+    const contactName = [contact.firstname, contact.lastname].filter(Boolean).join(' ') || 'Unknown';
+
+    if (alreadyQueued.has(contactId)) {
+      await pool.query(
+        `INSERT INTO research_briefs (task_id, task_title, task_due_date, contact_id, contact_name, status, skip_reason, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'skipped', 'Contact already in queue', NOW())
+         ON CONFLICT (task_id) DO NOTHING`,
+        [taskId, taskTitle, taskDueDate, contactId, contactName]
+      ).catch(() => {});
+      skipped++;
+      continue;
+    }
+
+    const { rows: recentRows } = await pool.query(
+      `SELECT id FROM research_briefs WHERE contact_id = $1 AND status = 'completed'
+         AND created_at >= NOW() - INTERVAL '7 days' ORDER BY created_at DESC LIMIT 1`,
+      [contactId]
+    ).catch(() => ({ rows: [] }));
+
+    if (recentRows.length) {
+      await pool.query(
+        `INSERT INTO research_briefs (task_id, task_title, task_due_date, contact_id, contact_name, status, skip_reason, previous_brief_id, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'skipped', 'Duplicate within 7 days', $6, NOW())
+         ON CONFLICT (task_id) DO NOTHING`,
+        [taskId, taskTitle, taskDueDate, contactId, contactName, recentRows[0].id]
+      ).catch(() => {});
+      skipped++;
+      console.log(`[Research Agent] Skipped task ${taskId} — recent brief exists for contact ${contactId}`);
+      continue;
+    }
+
+    const company = await getContactCompany(contactId);
+    const companyName = company?.name || contact.company || 'Unknown';
+    const downloadContext = buildDownloadContext(contact, taskTitle);
+
+    await pool.query(
+      `INSERT INTO research_briefs (task_id, task_title, task_due_date, contact_id, contact_name, company_name, download_context, status, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'queued', NOW())
+       ON CONFLICT (task_id) DO NOTHING`,
+      [taskId, taskTitle, taskDueDate, contactId, contactName, companyName, downloadContext]
+    ).catch(() => {});
+
+    alreadyQueued.add(contactId);
+    queued++;
+    console.log(`[Research Agent] Queued: ${contactName} at ${companyName} (task ${taskId})`);
+  }
+
+  console.log(`[Research Agent] Queue populated — ${queued} queued, ${skipped} skipped`);
+  return { queued, skipped };
 }
 
 // ── Main agent ────────────────────────────────────────────────────────────────
@@ -481,40 +583,29 @@ async function runResearchAgent() {
   }
 
   console.log(`[Research Agent] Starting run — ${new Date().toISOString()}`);
-  let processed = 0;
 
   try {
-    const tasks = await fetchTasksToProcess(settings);
+    await populateQueue(settings);
+  } catch (popErr) {
+    console.error('[Research Agent] Queue population error:', popErr.message);
+  }
 
-    for (const task of tasks) {
-      const taskId = task.id;
-      const taskTitle = task.properties.hs_task_subject || 'Untitled task';
-      const taskDueDate = task.properties.hs_timestamp
-        ? new Date(parseInt(task.properties.hs_timestamp))
-        : null;
+  let processed = 0;
+  try {
+    const { rows: queued } = await pool.query(
+      `SELECT task_id, task_title FROM research_briefs WHERE status = 'queued'`
+    );
 
-      const existing = await pool.query(
-        'SELECT id FROM research_briefs WHERE task_id = $1',
-        [taskId]
-      );
-      if (existing.rows.length) continue;
-
-      await pool.query(
-        `INSERT INTO research_briefs (task_id, task_title, task_due_date, status)
-         VALUES ($1, $2, $3, 'pending')
-         ON CONFLICT (task_id) DO NOTHING`,
-        [taskId, taskTitle, taskDueDate]
-      );
-
+    for (const row of queued) {
       try {
-        await processTask(taskId, taskTitle);
+        await processTask(row.task_id, row.task_title || 'Untitled task');
         processed++;
       } catch (taskErr) {
-        console.error(`[Research Agent] Task ${taskId} failed:`, taskErr.message);
+        console.error(`[Research Agent] Task ${row.task_id} failed:`, taskErr.message);
         await pool.query(
-          `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
-          [taskErr.message.slice(0, 1000), taskId]
-        );
+          `UPDATE research_briefs SET status = 'failed', error_text = $1, updated_at = NOW() WHERE task_id = $2`,
+          [taskErr.message.slice(0, 1000), row.task_id]
+        ).catch(() => {});
         processed++;
       }
     }
@@ -539,7 +630,7 @@ async function retryFailedBriefs() {
 
     for (const row of rows) {
       await pool.query(
-        `UPDATE research_briefs SET status = 'pending', error_text = NULL WHERE task_id = $1`,
+        `UPDATE research_briefs SET status = 'queued', error_text = NULL, updated_at = NOW() WHERE task_id = $1`,
         [row.task_id]
       );
 
@@ -549,7 +640,7 @@ async function retryFailedBriefs() {
       } catch (taskErr) {
         console.error(`[Research Agent] Retry of task ${row.task_id} failed:`, taskErr.message);
         await pool.query(
-          `UPDATE research_briefs SET status = 'failed', error_text = $1 WHERE task_id = $2`,
+          `UPDATE research_briefs SET status = 'failed', error_text = $1, updated_at = NOW() WHERE task_id = $2`,
           [taskErr.message.slice(0, 1000), row.task_id]
         );
         retried++;
@@ -686,7 +777,7 @@ app.post('/api/briefs/manual', async (req, res) => {
     await pool.query(
       `UPDATE research_briefs
        SET status = 'completed', brief_text = $1, hubspot_note_id = $2,
-           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5
+           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5, updated_at = NOW()
        WHERE task_id = $6`,
       [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, taskId]
     );
@@ -775,6 +866,58 @@ app.get('/api/costs', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/queue', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT rb.id, rb.task_id, rb.contact_id, rb.contact_name, rb.company_name,
+             rb.task_title, rb.task_due_date, rb.download_context, rb.status,
+             rb.estimated_cost_usd, rb.error_text, rb.skip_reason, rb.previous_brief_id,
+             rb.hubspot_note_id, rb.created_at, rb.updated_at,
+             pb.created_at AS prev_brief_created_at
+      FROM research_briefs rb
+      LEFT JOIN research_briefs pb ON rb.previous_brief_id = pb.id
+      ORDER BY rb.created_at DESC
+      LIMIT 300
+    `);
+    const grouped = { queued: [], processing: [], completed: [], failed: [], skipped: [] };
+    for (const row of rows) {
+      if (grouped[row.status]) grouped[row.status].push(row);
+    }
+    res.json(grouped);
+  } catch (err) {
+    console.error('[/api/queue]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/queue/:id', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM research_briefs WHERE id = $1',
+      [req.params.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/queue/populate', async (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== `Bearer ${process.env.AGENT_SECRET}`) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const settings = await getSettings();
+    const result = await populateQueue(settings);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[Research Agent] Queue populate failed:', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
