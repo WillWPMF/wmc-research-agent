@@ -226,44 +226,69 @@ Work through these searches in order. Do not skip any. Try variations if a searc
 
 ## Output format — HTML only
 
-Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation outside the tags. Use exactly this structure:
+Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation outside the tags.
 
-<h3>📞 Suggested Opener</h3>
-<p style="font-size:15px;font-style:italic;">"[A single literal sentence Olly could say to open the call, referencing one specific verified fact found in this research — e.g. a recent news item, an initiative, or what the contact downloaded. This must be a ready-to-say sentence, not a strategy description. Only reference things confirmed via search in this session.]"</p>
+### Formatting rules — follow these exactly
 
-<h3>🏢 Company Snapshot</h3>
-<p>[2–3 sentences: what the company does, approximate size, sector, UK/international locations, recent trajectory — growing, stable, restructuring, or in flux]</p>
-<p style="font-size:11px;color:#718096;">Sources: <a href="[URL1]">[domain1]</a>, <a href="[URL2]">[domain2]</a></p>
+**Section headers** — use this exact pattern for every section (uppercase label, blue bold, spacing above):
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">[EMOJI] [SECTION NAME IN CAPS]</strong></p>
 
-<h3>📰 Recent News &amp; Signals</h3>
+**Paragraphs** — keep each paragraph to 2–3 sentences maximum. Use multiple <p> tags rather than one dense block.
+
+**Sources** — cite inline immediately after the claim they support, not bunched at the end:
+[claim text] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span>
+
+**Section separators** — place a horizontal rule between every section:
+<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
+
+### Full structure to follow
+
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">📞 SUGGESTED OPENER</strong></p>
+<p style="font-size:15px;font-style:italic;">"[A single literal sentence Olly could say to open the call, referencing one specific verified fact from this research. Must be ready-to-say, not a strategy description. Only reference things confirmed via search in this session.]"</p>
+
+<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
+
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">🏢 COMPANY SNAPSHOT</strong></p>
+<p>[What the company does, approximate size, sector, UK/international presence.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
+<p>[Recent trajectory — growing, stable, restructuring, or in flux. Keep to 2–3 sentences max.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
+
+<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
+
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">📰 RECENT NEWS &amp; SIGNALS</strong></p>
 <ul>
-  <li>[Specific verifiable fact found via search — e.g. raised Series B funding Jan 2025, opened Manchester office, acquired by X, named in Sunday Times Best Companies 2024] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
-  <li>[Second specific fact — e.g. CEO announced 150 redundancies March 2025, rebranded after merger] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
-  <li>[Wellbeing or HR signal if found — e.g. recently appointed a Head of People &amp; Culture, LinkedIn posts about mental health awareness week, signed the Time to Change pledge] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
+  <li>[Specific verifiable fact — e.g. raised Series B Jan 2025, opened Manchester office, acquired by X, named Sunday Times Best Companies 2024.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
+  <li>[Second specific fact — e.g. CEO announced 150 redundancies Mar 2025, rebranded after merger.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
+  <li>[Wellbeing or HR signal if found — e.g. appointed Head of People &amp; Culture, LinkedIn post about mental health awareness week, signed Time to Change pledge.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
 </ul>
 
-<h3>🔍 Wellbeing Activity &amp; Provider Check</h3>
+<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
+
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">🔍 WELLBEING ACTIVITY &amp; PROVIDER CHECK</strong></p>
 <ul>
-  <li>[Each finding as its own bullet — e.g. "Mentioned MHFA programme on LinkedIn, Apr 2024", "EAP provided by Bupa EAP (named on careers page)", "Careers page references neurodiversity support". If a named external training provider or EAP supplier is found, name it explicitly — it is a competitor.] <a href="[URL]" target="_blank" style="font-size:11px;">[source domain]</a></li>
+  <li>[Each finding as its own bullet — e.g. "EAP provided by Bupa (named on careers page)", "LinkedIn post about their MHFAiders programme Apr 2024", "Careers page mentions neurodiversity support". Name any external provider explicitly — it is a competitor.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
 </ul>
-<p>[One summary sentence drawing a conclusion from the findings — e.g. "Already running MHFA but no public mention of refresher training — possible renewal conversation" or "No public activity found around MHFA, neurodiversity, menopause or wellbeing training — suggests this may be new territory for the organisation."]</p>
-<p style="font-size:11px;color:#718096;">Sources: <a href="[URL]">[domain]</a></p>
+<p>[One summary sentence concluding from the findings — e.g. "Already running MHFA but no refresher mention — possible renewal conversation." If nothing found across all searches, write exactly: "No public activity found around MHFA, neurodiversity, menopause or wellbeing training — suggests this may be new territory for the organisation."]</p>
 
-<h3>👤 About ${contactName || 'the Contact'}</h3>
-<p>[Their verified role EXACTLY as found on their confirmed LinkedIn or profile — do not paraphrase. Note their tenure and previous roles if found. If the profile could not be verified as matching both name and company, say so rather than guessing. If little is publicly available, be honest: "Limited public profile found."]</p>
-<p style="font-size:11px;color:#718096;">Sources: <a href="[URL]">[domain]</a></p>
+<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
 
-<h3>💡 Recommended Angle</h3>
-<p><strong>[One specific, actionable approach for this call — directly connect what they downloaded or enquired about with something concrete discovered in research. Make it specific to this company and contact, not generic. E.g. "Given their recent 40% headcount growth and the contact's HR Business Partner role, lead with the manager mental health training angle — fast-scaling teams consistently produce first-time managers who lack the skills and confidence to handle wellbeing conversations."]</strong></p>
-<p style="font-size:11px;color:#718096;">Sources: <a href="[URL1]">[domain1]</a>, <a href="[URL2]">[domain2]</a></p>
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">👤 ABOUT ${contactName ? contactName.toUpperCase() : 'THE CONTACT'}</strong></p>
+<p>[Their verified role EXACTLY as written on their confirmed profile — do not paraphrase. Tenure and current company.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
+<p>[Previous roles or background if found. If the profile could not be verified as matching both name and company, say so. If little is publicly available, write: "Limited public profile found."]</p>
+
+<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
+
+<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">💡 RECOMMENDED ANGLE</strong></p>
+<p><strong>The situation:</strong> [1–2 sentences on the context or trigger — what they downloaded, what is happening at the company, what their role implies.]</p>
+<p><strong>The opening:</strong> [1–2 sentences on how to connect their specific situation to WMC's services.]</p>
+<p><strong>The ask:</strong> [1 sentence on what to propose or move toward in this call.]</p>
 
 ## Rules
 - The Suggested Opener must reference one specific verified fact — not a generic greeting
-- Every fact in Recent News &amp; Signals must be something you found via search and must have a source link — if you cannot cite a source, do not include the claim
-- Every bullet point and the About section must have at least one source link
-- If a section genuinely has nothing after trying multiple searches, write the fallback text specified above for that section
-- Do not pad with generic industry statements — one real cited fact is worth more than three generic ones
-- The Recommended Angle must be tailored to this specific company and contact
+- Every factual claim must have an inline source citation — if you cannot cite it, do not include it
+- Keep every paragraph to 2–3 sentences — no dense text walls
+- If a section has nothing after trying multiple searches, write the fallback text specified above for that section
+- Do not pad with generic industry statements — one real cited fact beats three generic ones
+- The Recommended Angle must use the three-part structure (situation / opening / ask) — not a single paragraph
 - Output nothing outside the six HTML sections above`;
 
   const userMessage = `Company name: ${companyName}
