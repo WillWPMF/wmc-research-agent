@@ -46,6 +46,8 @@ async function initDb() {
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS input_tokens INTEGER`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS output_tokens INTEGER`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS estimated_cost_usd DECIMAL(10,4)`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS cache_creation_tokens INTEGER`);
+  await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS skip_reason VARCHAR(255)`);
   await pool.query(`ALTER TABLE research_briefs ADD COLUMN IF NOT EXISTS previous_brief_id INTEGER REFERENCES research_briefs(id)`);
@@ -224,129 +226,160 @@ function buildDownloadContext(contact, taskTitle) {
 
 // ── Step 3: Research company with Claude ─────────────────────────────────────
 
+function buildNoteHtml(data, contactName) {
+  const hr = '<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">';
+
+  function sectionHeader(emoji, title) {
+    return `<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">${emoji} ${title}</strong></p>`;
+  }
+
+  function srcLink(url, domain) {
+    if (!url) return domain || '';
+    return `<a href="${url}" target="_blank" style="color:#A0AEC0;">${domain || url}</a>`;
+  }
+
+  function sourcesLine(sources) {
+    const valid = (sources || []).filter(s => s && (s.url || s.sourceUrl));
+    if (!valid.length) return '<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: none found</p>';
+    const links = valid.map(s => srcLink(s.url || s.sourceUrl, s.domain || s.sourceDomain)).join(', ');
+    return `<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: ${links}</p>`;
+  }
+
+  function inlineSrc(url, domain) {
+    if (!url) return '';
+    return ` <span style="font-size:11px;color:#A0AEC0;">[${srcLink(url, domain)}]</span>`;
+  }
+
+  let html = '';
+
+  // Suggested opener
+  const openerSrc = data.recentNews?.[0] ? [{ url: data.recentNews[0].sourceUrl, domain: data.recentNews[0].sourceDomain }] : [];
+  html += sectionHeader('📞', 'SUGGESTED OPENER');
+  html += `<p style="font-size:15px;font-style:italic;">"${data.suggestedOpener || 'No opener generated.'}"</p>`;
+  html += sourcesLine(openerSrc);
+  html += hr;
+
+  // Company snapshot
+  html += sectionHeader('🏢', 'COMPANY SNAPSHOT');
+  html += `<p>${data.companySnapshot || 'No information found.'}</p>`;
+  const snapshotSrc = (data.recentNews || []).slice(0, 2).map(n => ({ url: n.sourceUrl, domain: n.sourceDomain }));
+  html += sourcesLine(snapshotSrc);
+  html += hr;
+
+  // Recent news
+  html += sectionHeader('📰', 'RECENT NEWS &amp; SIGNALS');
+  if (data.recentNews && data.recentNews.length > 0) {
+    html += '<ul>';
+    for (const item of data.recentNews) {
+      html += `<li>${item.point}${inlineSrc(item.sourceUrl, item.sourceDomain)}</li>`;
+    }
+    html += '</ul>';
+    html += sourcesLine(data.recentNews);
+  } else {
+    html += '<p>No recent news found.</p>';
+    html += sourcesLine([]);
+  }
+  html += hr;
+
+  // Wellbeing check
+  html += sectionHeader('🔍', 'WELLBEING ACTIVITY &amp; PROVIDER CHECK');
+  const wc = data.wellbeingCheck || {};
+  if (wc.findings && wc.findings.length > 0) {
+    html += '<ul>';
+    for (const f of wc.findings) {
+      html += `<li>${f.point}${inlineSrc(f.sourceUrl, f.sourceDomain)}</li>`;
+    }
+    html += '</ul>';
+  }
+  html += `<p>${wc.summary || (wc.noProviderFound !== false ? 'No public activity found around MHFA, neurodiversity, menopause or wellbeing training — suggests this may be new territory for the organisation.' : '')}</p>`;
+  html += sourcesLine(wc.findings || []);
+  html += hr;
+
+  // About contact
+  const contactLabel = contactName ? `ABOUT ${contactName.toUpperCase()}` : 'ABOUT THE CONTACT';
+  html += sectionHeader('👤', contactLabel);
+  const ac = data.aboutContact || {};
+  html += `<p>${ac.summary || 'No profile found.'}</p>`;
+  if (ac.verified === false) {
+    html += '<p style="color:#A0AEC0;font-size:12px;">Profile could not be verified as matching both name and company.</p>';
+  }
+  html += sourcesLine(ac.sources || []);
+  html += hr;
+
+  // Recommended angle
+  html += sectionHeader('💡', 'RECOMMENDED ANGLE');
+  const ra = data.recommendedAngle || {};
+  if (ra.situation || ra.opening || ra.ask) {
+    if (ra.situation) html += `<p><strong>The situation:</strong> ${ra.situation}</p>`;
+    if (ra.opening)   html += `<p><strong>The opening:</strong> ${ra.opening}</p>`;
+    if (ra.ask)       html += `<p><strong>The ask:</strong> ${ra.ask}</p>`;
+  } else {
+    html += '<p>No angle generated.</p>';
+  }
+  html += sourcesLine(ra.sources || []);
+
+  return html;
+}
+
 async function researchCompany({ taskId, contactName, companyName, industry, employeeCount, city, jobTitle, downloadContext }) {
-  const systemPrompt = `You are a research assistant for The Workplace Mindfulness Co., a UK-based workplace wellbeing training company. Your job is to prepare a detailed, genuinely useful pre-call research brief before a sales call.
+  const currentYear = new Date().getFullYear();
+  const contactFirst = (contactName || '').split(' ')[0];
+  const contactLast = (contactName || '').split(' ').slice(1).join(' ');
 
-We deliver bespoke mental health and wellbeing training and programmes to organisations. Our core offerings include Mental Health Awareness, Mental Health First Aider (MHFA) training, MHFA Refresher, and wellbeing programmes covering resilience, menopause, neurodiversity and more.
+  const systemPrompt = `You are a research assistant for The Workplace Mindfulness Co. (WMC), a UK workplace wellbeing training company. You prepare pre-call research briefs for sales calls. WMC delivers mental health awareness, MHFA training, resilience, menopause, and neurodiversity programmes.
 
-## CRITICAL ACCURACY RULES — read these before doing anything else
+## ACCURACY RULES
 
-- Every factual claim about the person or company MUST be based on something found via web search in this session — never infer, assume, or guess.
-- If you find a LinkedIn profile, state the person's role and company EXACTLY as written on their profile. Do not paraphrase or reinterpret job titles.
-- If search results are ambiguous, conflicting, or you are not confident a result is about the correct person or company, say so explicitly rather than presenting it as fact.
-- Do not invent company names, relationships, or affiliations. If you cannot find the person's actual employer or role with confidence, say "Could not verify [X] — search results were inconclusive" rather than guessing.
-- It is far better to write "No reliable information found" than to state something incorrect confidently.
-- Track the URL of every search result you draw information from. You will cite these URLs inline in the output.
+- Every factual claim MUST be based on a web search result from this session — never infer, assume, or guess.
+- Verify the contact: their result must match BOTH their name AND company. If you cannot verify both, write "Could not verify — results inconclusive."
+- Cite a source URL for every factual claim. If you cannot cite it, do not include it.
+- If a section has no findings, write "Not found" — do not pad with generic statements.
 
-## Research process — run all of these searches before writing
+## OUTPUT FORMAT — JSON only
 
-Work through these searches in order. Do not skip any. Try variations if a search returns little.
+Return ONLY valid JSON. No markdown, no backticks, no preamble.
 
-1. Company news: search "[company name] news 2024 2025" then "[company name] funding growth restructuring layoffs"
-2. Company LinkedIn: search "[company name] LinkedIn" — look for their company page, recent posts about culture, hiring, wellbeing, events
-3. HR and wellbeing signals: search "[company name] mental health wellbeing EAP HR" and "[company name] careers hiring people"
-4. Wellbeing activity check — run all of these searches:
-   - "[company name] employee assistance programme"
-   - "[company name] EAP provider"
-   - "[company name] wellbeing partner"
-   - "[company name] mental health first aid" / "[company name] MHFA"
-   - "[company name] wellbeing training"
-   - "[company name] neurodiversity"
-   - "[company name] menopause support"
-   - "[company name] employee wellbeing programme"
-   For each search: note any named external providers (these are competitors), any public mentions on LinkedIn posts, careers pages, press releases, or company blogs, and cite the URL. The absence of findings is itself a useful signal — track it.
-5. Contact person — identity verification required:
-   a. Search "[contact name] [company name] LinkedIn" then "[contact name] [company name]"
-   b. Before using any result, confirm it matches BOTH the name AND the company already known from HubSpot. If the company in the search result does not match the HubSpot company, do not use that profile.
-   c. If no result matches both name and company with confidence, write "Could not find a verified profile matching both name and company" — do not use an unverified profile.
+{
+  "suggestedOpener": "one literal sentence Olly could say to open the call, referencing one specific verified fact",
+  "companySnapshot": "2-3 sentences: what the company does, size, sector, recent trajectory",
+  "recentNews": [
+    { "point": "specific verified fact", "sourceUrl": "string", "sourceDomain": "string" }
+  ],
+  "wellbeingCheck": {
+    "summary": "one sentence conclusion — e.g. already running MHFA, or no public activity found",
+    "findings": [
+      { "point": "specific finding e.g. EAP provided by Bupa (named on careers page)", "sourceUrl": "string", "sourceDomain": "string" }
+    ],
+    "noProviderFound": false
+  },
+  "aboutContact": {
+    "summary": "verified role exactly as written on profile, tenure, background. If unverified write: Could not verify.",
+    "verified": true,
+    "sources": [{ "url": "string", "domain": "string" }]
+  },
+  "recommendedAngle": {
+    "situation": "2-3 sentences on context and trigger",
+    "opening": "2-3 sentences connecting their situation to WMC services",
+    "ask": "1 sentence on what to propose in this call",
+    "sources": [{ "url": "string", "domain": "string" }]
+  }
+}
 
-## Output format — HTML only
+## PRIORITISED SEARCH ORDER — use at most 4 searches in this order
 
-Output ONLY valid HTML. No markdown, no asterisks, no preamble, no explanation outside the tags.
+1. "${companyName} news ${currentYear}"
+2. "${companyName} LinkedIn OR ${companyName} wellbeing OR ${companyName} MHFA"
+3. "${contactFirst} ${contactLast} ${companyName} LinkedIn"
+4. "${companyName} EAP OR ${companyName} employee assistance OR ${companyName} mental health training"`;
 
-### Formatting rules — follow these exactly
-
-**Section headers** — use this exact pattern for every section (uppercase label, blue bold, spacing above):
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">[EMOJI] [SECTION NAME IN CAPS]</strong></p>
-
-**Paragraphs** — keep each paragraph to 2–3 sentences maximum. Use multiple <p> tags rather than one dense block.
-
-**Inline citations** — cite immediately after the specific claim they support:
-[claim text] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span>
-
-**End-of-section sources line** — every section must end with a consolidated sources line listing all URLs used in that section (deduplicated). Use this exact format:
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
-If a section has no citations at all, write: <p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: none found</p>
-
-**Section separators** — place a horizontal rule between every section:
-<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
-
-### Full structure to follow
-
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">📞 SUGGESTED OPENER</strong></p>
-<p style="font-size:15px;font-style:italic;">"[A single literal sentence Olly could say to open the call, referencing one specific verified fact from this research. Must be ready-to-say, not a strategy description. Only reference things confirmed via search in this session.]"</p>
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL]" style="color:#A0AEC0;">[domain]</a></p>
-
-<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
-
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">🏢 COMPANY SNAPSHOT</strong></p>
-<p>[What the company does, approximate size, sector, UK/international presence.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
-<p>[Recent trajectory — growing, stable, restructuring, or in flux. Keep to 2–3 sentences max.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
-
-<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
-
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">📰 RECENT NEWS &amp; SIGNALS</strong></p>
-<ul>
-  <li>[Specific verifiable fact — e.g. raised Series B Jan 2025, opened Manchester office, acquired by X, named Sunday Times Best Companies 2024.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
-  <li>[Second specific fact — e.g. CEO announced 150 redundancies Mar 2025, rebranded after merger.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
-  <li>[Wellbeing or HR signal if found — e.g. appointed Head of People &amp; Culture, LinkedIn post about mental health awareness week, signed Time to Change pledge.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
-</ul>
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
-
-<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
-
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">🔍 WELLBEING ACTIVITY &amp; PROVIDER CHECK</strong></p>
-<ul>
-  <li>[Each finding as its own bullet — e.g. "EAP provided by Bupa (named on careers page)", "LinkedIn post about their MHFAiders programme Apr 2024", "Careers page mentions neurodiversity support". Name any external provider explicitly — it is a competitor.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></li>
-</ul>
-<p>[One summary sentence concluding from the findings — e.g. "Already running MHFA but no refresher mention — possible renewal conversation." If nothing found across all searches, write exactly: "No public activity found around MHFA, neurodiversity, menopause or wellbeing training — suggests this may be new territory for the organisation."]</p>
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
-
-<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
-
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">👤 ABOUT ${contactName ? contactName.toUpperCase() : 'THE CONTACT'}</strong></p>
-<p>[Their verified role EXACTLY as written on their confirmed profile — do not paraphrase. Tenure and current company.] <span style="font-size:11px;color:#A0AEC0;">[<a href="[URL]" target="_blank" style="color:#A0AEC0;">source</a>]</span></p>
-<p>[Previous roles or background if found. If the profile could not be verified as matching both name and company, say so. If little is publicly available, write: "Limited public profile found."]</p>
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL]" style="color:#A0AEC0;">[domain]</a></p>
-
-<hr style="border:none;border-top:1px solid #E8ECF0;margin:16px 0;">
-
-<p style="margin-top:16px;margin-bottom:4px;"><strong style="color:#3B6FE8;">💡 RECOMMENDED ANGLE</strong></p>
-<p><strong>The situation:</strong> [1–2 sentences on the context or trigger — what they downloaded, what is happening at the company, what their role implies.]</p>
-<p><strong>The opening:</strong> [1–2 sentences on how to connect their specific situation to WMC's services.]</p>
-<p><strong>The ask:</strong> [1 sentence on what to propose or move toward in this call.]</p>
-<p style="font-size:11px;color:#A0AEC0;margin-top:8px;">Sources: <a href="[URL1]" style="color:#A0AEC0;">[domain1]</a>, <a href="[URL2]" style="color:#A0AEC0;">[domain2]</a></p>
-
-## Rules
-- The Suggested Opener must reference one specific verified fact — not a generic greeting
-- Every factual claim must have an inline source citation — if you cannot cite it, do not include it
-- Every section must end with its own sources line (deduplicated list of all URLs used in that section)
-- Keep every paragraph to 2–3 sentences — no dense text walls
-- If a section has nothing after trying multiple searches, write the fallback text specified above for that section
-- Do not pad with generic industry statements — one real cited fact beats three generic ones
-- The Recommended Angle must use the three-part structure (situation / opening / ask) — not a single paragraph
-- Output nothing outside the six HTML sections above`;
-
-  const userMessage = `Company name: ${companyName}
+  const userMessage = `Company: ${companyName}
 Industry: ${industry || 'Not specified'}
-Approximate headcount: ${employeeCount || 'Unknown'}
+Headcount: ${employeeCount || 'Unknown'}
 Location: ${city || 'Unknown'}
-Contact name: ${contactName || 'Unknown'}
-Contact role: ${jobTitle || 'Unknown'}
-What they downloaded or enquired about: ${downloadContext}
+Contact: ${contactName || 'Unknown'} — ${jobTitle || 'Unknown'}
+What they downloaded / enquired about: ${downloadContext}
 
-Research this company and contact thoroughly using web search, then produce the HTML brief.`;
+Research this company and contact using web search, then return the JSON brief.`;
 
   console.log('[Research Agent] API key present:', !!process.env.ANTHROPIC_API_KEY);
   console.log('[Research Agent] API key length:', process.env.ANTHROPIC_API_KEY?.length);
@@ -357,13 +390,13 @@ Research this company and contact thoroughly using web search, then produce the 
   try {
     response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 8192,
+      max_tokens: 2048,
       tools: [{
         type: 'web_search_20250305',
         name: 'web_search',
-        max_uses: 12,
+        max_uses: 4,
       }],
-      system: systemPrompt,
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: userMessage }],
     });
   } catch (error) {
@@ -376,11 +409,28 @@ Research this company and contact thoroughly using web search, then produce the 
   }
 
   const textBlock = response.content.findLast(b => b.type === 'text');
-  const briefText = textBlock ? textBlock.text.trim() : '<p>Research could not be completed.</p>';
-  const inputTokens = response.usage?.input_tokens || 0;
-  const outputTokens = response.usage?.output_tokens || 0;
-  const estimatedCostUsd = (inputTokens * 3 / 1_000_000) + (outputTokens * 15 / 1_000_000);
-  return { briefText, inputTokens, outputTokens, estimatedCostUsd };
+  const rawResponse = textBlock ? textBlock.text.trim() : '';
+
+  let briefText;
+  try {
+    const data = JSON.parse(rawResponse);
+    briefText = buildNoteHtml(data, contactName);
+  } catch (e) {
+    console.error('[Research Agent] JSON parse failed, using raw text fallback');
+    briefText = rawResponse ? `<p>${rawResponse}</p>` : '<p>Research could not be completed.</p>';
+  }
+
+  const usage = response.usage || {};
+  const cacheCreationTokens = usage.cache_creation_input_tokens || 0;
+  const cacheReadTokens = usage.cache_read_input_tokens || 0;
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  const estimatedCostUsd =
+    (cacheCreationTokens / 1_000_000 * 3.75) +
+    (cacheReadTokens     / 1_000_000 * 0.30) +
+    (inputTokens         / 1_000_000 * 3)    +
+    (outputTokens        / 1_000_000 * 15);
+  return { briefText, inputTokens, outputTokens, estimatedCostUsd, cacheCreationTokens, cacheReadTokens };
 }
 
 // ── Step 4: Write HubSpot note ────────────────────────────────────────────────
@@ -454,7 +504,7 @@ async function processTask(taskId, taskTitle) {
     );
 
     currentlyProcessing = { taskId, contactName, step: 'researching' };
-    const { briefText, inputTokens, outputTokens, estimatedCostUsd } = await researchCompany({
+    const { briefText, inputTokens, outputTokens, estimatedCostUsd, cacheCreationTokens, cacheReadTokens } = await researchCompany({
       taskId,
       contactName,
       companyName,
@@ -471,9 +521,10 @@ async function processTask(taskId, taskTitle) {
     await pool.query(
       `UPDATE research_briefs
        SET status = 'completed', brief_text = $1, hubspot_note_id = $2,
-           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5, updated_at = NOW()
-       WHERE task_id = $6`,
-      [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, taskId]
+           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5,
+           cache_creation_tokens = $6, cache_read_tokens = $7, updated_at = NOW()
+       WHERE task_id = $8`,
+      [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, cacheCreationTokens, cacheReadTokens, taskId]
     );
   } finally {
     currentlyProcessing = null;
@@ -760,7 +811,7 @@ app.post('/api/briefs/manual', async (req, res) => {
     );
 
     currentlyProcessing = { taskId, contactName, step: 'researching' };
-    const { briefText, inputTokens, outputTokens, estimatedCostUsd } = await researchCompany({
+    const { briefText, inputTokens, outputTokens, estimatedCostUsd, cacheCreationTokens, cacheReadTokens } = await researchCompany({
       taskId,
       contactName,
       companyName,
@@ -777,9 +828,10 @@ app.post('/api/briefs/manual', async (req, res) => {
     await pool.query(
       `UPDATE research_briefs
        SET status = 'completed', brief_text = $1, hubspot_note_id = $2,
-           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5, updated_at = NOW()
-       WHERE task_id = $6`,
-      [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, taskId]
+           input_tokens = $3, output_tokens = $4, estimated_cost_usd = $5,
+           cache_creation_tokens = $6, cache_read_tokens = $7, updated_at = NOW()
+       WHERE task_id = $8`,
+      [briefText, noteId, inputTokens, outputTokens, estimatedCostUsd, cacheCreationTokens, cacheReadTokens, taskId]
     );
 
     const { rows } = await pool.query('SELECT id FROM research_briefs WHERE task_id = $1', [taskId]);
