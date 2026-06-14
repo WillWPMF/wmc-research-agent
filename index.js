@@ -410,13 +410,24 @@ Research this company and contact using web search, then return the JSON brief.`
 
   const textBlock = response.content.findLast(b => b.type === 'text');
   const rawResponse = textBlock ? textBlock.text.trim() : '';
+  console.log('[Research Agent] Raw response length:', rawResponse.length, '— first 120 chars:', rawResponse.slice(0, 120));
+
+  // Strip markdown code fences if Claude wrapped the JSON despite the instruction
+  let jsonStr = rawResponse.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+  // Extract JSON object by brace boundaries in case there's any preamble text
+  const firstBrace = jsonStr.indexOf('{');
+  const lastBrace = jsonStr.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    jsonStr = jsonStr.slice(firstBrace, lastBrace + 1);
+  }
 
   let briefText;
   try {
-    const data = JSON.parse(rawResponse);
+    const data = JSON.parse(jsonStr);
     briefText = buildNoteHtml(data, contactName);
+    console.log('[Research Agent] Note HTML length:', briefText.length);
   } catch (e) {
-    console.error('[Research Agent] JSON parse failed, using raw text fallback');
+    console.error('[Research Agent] JSON parse failed:', e.message, '— jsonStr start:', jsonStr.slice(0, 200));
     briefText = rawResponse ? `<p>${rawResponse}</p>` : '<p>Research could not be completed.</p>';
   }
 
@@ -516,6 +527,7 @@ async function processTask(taskId, taskTitle) {
     });
 
     currentlyProcessing = { taskId, contactName, step: 'writing_note' };
+    console.log('[Research Agent] Writing note — briefText length:', briefText.length, '— starts with HTML tag:', briefText.trimStart().startsWith('<'));
     const noteId = await writeHubSpotNote(contact.id, briefText, taskTitle);
 
     await pool.query(
@@ -823,6 +835,7 @@ app.post('/api/briefs/manual', async (req, res) => {
     });
 
     currentlyProcessing = { taskId, contactName, step: 'writing_note' };
+    console.log('[Research Agent] Writing note — briefText length:', briefText.length, '— starts with HTML tag:', briefText.trimStart().startsWith('<'));
     const noteId = await writeHubSpotNote(contactId, briefText, taskTitle);
 
     await pool.query(
